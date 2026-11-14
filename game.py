@@ -22,6 +22,11 @@ SNAKE_SIZE = (60, 60)
 SNAKE_FRAME_DURATION = 0.1
 LAUNCHPAD_AREA = (630, 347, 41, 36)
 PORTAL_LANDING = (689, 135)
+MAX_HEALTH = 100
+ATTACK_DAMAGE = 25
+ATTACK_RANGE = 85
+CONTACT_DAMAGE = 20
+CONTACT_COOLDOWN = 0.8
 ORE_COUNT = 24
 ORE_SIZE = (48, 48)
 ORE_IMAGE_FILES = (
@@ -363,6 +368,16 @@ def show_intro_screen(screen: pygame.Surface, clock) -> bool:
         clock.tick(60)
 
 
+def draw_health_bar(screen, frame, position, health, color):
+    x, y = position
+    width, height = frame.get_size()
+    fill = pygame.Rect(x + 5, y + 7, width - 11, height - 14)
+    pygame.draw.rect(screen, (35, 22, 24), fill)
+    fill.width = round(fill.width * health / MAX_HEALTH)
+    pygame.draw.rect(screen, color, fill)
+    screen.blit(frame, position)
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -378,6 +393,10 @@ def run_game() -> None:
     tile_size = GRID_TILE_SIZE * MAP_SCALE
     sprites = load_sprites(img_dir)
     ore_images = load_ore_images(img_dir)
+    health_bar = pygame.image.load(img_dir / "health_bar.png").convert_alpha()
+    death_message = pygame.font.Font(None, 44).render(
+        "You died. Press Enter to respawn.", True, (255, 255, 255)
+    )
 
     launchpad_area = pygame.Rect(*(value * MAP_SCALE for value in LAUNCHPAD_AREA))
     launchpad = pygame.image.load(img_dir / "pixil-frame-0(2).png").convert_alpha()
@@ -390,7 +409,11 @@ def run_game() -> None:
 
     spawn_x, spawn_y = ENTRANCE_FRACTION
     spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
-    pos = find_spawn(spawn_target, grid, tile_size)
+    entrance_pos = find_spawn(spawn_target, grid, tile_size)
+    pos = entrance_pos.copy()
+    player_health = MAX_HEALTH
+    snake_health = MAX_HEALTH
+    contact_cooldown = 0.0
 
     snake = Snake(img_dir, pos, grid, tile_size)
     ores = scatter_ores(grid, tile_size, pos, snake.pos, ore_images)
@@ -412,6 +435,14 @@ def run_game() -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif player_health == 0:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                    player_health = MAX_HEALTH
+                    pos = entrance_pos.copy()
+                    contact_cooldown = CONTACT_COOLDOWN
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if snake_health > 0 and pos.distance_to(snake.pos) <= ATTACK_RANGE:
+                    snake_health = max(0, snake_health - ATTACK_DAMAGE)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
                 if launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
@@ -421,7 +452,7 @@ def run_game() -> None:
 
         keys = pygame.key.get_pressed()
         move = pygame.Vector2(int(keys[pygame.K_d]) - int(keys[pygame.K_a]), int(keys[pygame.K_s]) - int(keys[pygame.K_w]))
-        has_input = move.length_squared() > 0
+        has_input = player_health > 0 and move.length_squared() > 0
 
         if has_input:
             move = move.normalize()
@@ -453,7 +484,13 @@ def run_game() -> None:
         frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
         current_frame = frames[frame_idx if is_moving else 0]
 
-        snake_frame = snake.update(pos, dt)
+        if snake_health > 0:
+            snake_frame = snake.update(pos, dt if player_health > 0 else 0)
+            contact_cooldown = max(0, contact_cooldown - dt)
+            dx, dy = snake.pos - pos
+            if contact_cooldown == 0 and abs(dx) < 2 * HITBOX_HALF[0] and abs(dy) < 2 * HITBOX_HALF[1]:
+                player_health = max(0, player_health - CONTACT_DAMAGE)
+                contact_cooldown = CONTACT_COOLDOWN
 
         cam_x = max(0, min(pos.x - center.x, world.get_width() - screen.get_width()))
         cam_y = max(0, min(pos.y - center.y, world.get_height() - screen.get_height()))
@@ -468,10 +505,19 @@ def run_game() -> None:
         if launchpad_placed:
             pad_rect = launchpad.get_rect(center=launchpad_area.center)
             screen.blit(launchpad, pad_rect.move(-round(cam_x), -round(cam_y)))
-        snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
-        screen.blit(snake_frame, snake_rect)
+        if snake_health > 0:
+            snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
+            screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
+        if snake_health > 0:
+            bar_pos = (snake_rect.centerx - health_bar.get_width() // 2, snake_rect.top - health_bar.get_height())
+            draw_health_bar(screen, health_bar, bar_pos, snake_health, (216, 107, 48))
+        draw_health_bar(screen, health_bar, (16, 16), player_health, (208, 55, 68))
+        if player_health == 0:
+            message_rect = death_message.get_rect(center=screen.get_rect().center)
+            pygame.draw.rect(screen, (26, 17, 20), message_rect.inflate(32, 20))
+            screen.blit(death_message, message_rect)
         pygame.display.flip()
 
 
