@@ -10,6 +10,7 @@ This game was developed by Jonathan A, Declyn E, and Essa K.
 ## Credits
 Map was taken from Chrono Trigger's Magic Cave map right before entering Magus' castle. Ore textures were found for free online as well as the sprite and its animation. 
 Game was thought of and designed by Jon. Essa worked on developing the grid algorithms, and Declyn was the main artist for the non premade assets.
+Music was made by Jon as well, integrated into the game by Essa.
 
 ## Controls
 Game is a simple WASD movement mechanics. Users must left click in order to damage the snake and right click to mine the ores. 
