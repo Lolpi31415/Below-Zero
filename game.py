@@ -1,6 +1,7 @@
 from collections import deque
 from pathlib import Path
 import random
+import asyncio
 
 import pygame
 
@@ -311,7 +312,7 @@ class Snake:
         return frame
 
 
-def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
+async def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
     background = pygame.image.load(img_dir / "mainmenubg.png").convert()
     background = pygame.transform.scale(background, screen.get_size())
     button_font = pygame.font.Font(None, 44)
@@ -351,6 +352,7 @@ def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
 
         pygame.display.flip()
         clock.tick(60)
+        await asyncio.sleep(0)
 
 
 def show_loading_screen(screen: pygame.Surface) -> int:
@@ -362,16 +364,17 @@ def show_loading_screen(screen: pygame.Surface) -> int:
     return pygame.time.get_ticks()
 
 
-def keep_loading_screen_visible(clock, shown_at: int) -> bool:
+async def keep_loading_screen_visible(clock, shown_at: int) -> bool:
     while pygame.time.get_ticks() - shown_at < LOADING_SCREEN_DURATION_MS:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
         clock.tick(60)
+        await asyncio.sleep(0)
     return True
 
 
-def show_intro_screen(screen: pygame.Surface, clock) -> bool:
+async def show_intro_screen(screen: pygame.Surface, clock) -> bool:
     story_font = pygame.font.Font(None, 42)
     prompt_font = pygame.font.Font(None, 30)
     story_lines = (
@@ -410,9 +413,10 @@ def show_intro_screen(screen: pygame.Surface, clock) -> bool:
         )
         pygame.display.flip()
         clock.tick(60)
+        await asyncio.sleep(0)
 
 
-def show_shop_menu(screen, clock, ore_count, owns_launchpad):
+async def show_shop_menu(screen, clock, ore_count, owns_launchpad):
     title_font = pygame.font.Font(None, 56)
     item_font = pygame.font.Font(None, 38)
     prompt_font = pygame.font.Font(None, 28)
@@ -450,6 +454,7 @@ def show_shop_menu(screen, clock, ore_count, owns_launchpad):
         screen.blit(prompt, prompt.get_rect(center=(center_x, 500)))
         pygame.display.flip()
         clock.tick(60)
+        await asyncio.sleep(0)
 
 
 def load_mining_frames(img_dir):
@@ -473,7 +478,7 @@ def draw_health_bar(screen, frame, position, health, color):
     screen.blit(frame, position)
 
 
-def show_credits(screen, clock):
+async def show_credits(screen, clock):
     credits_lines = (
         "Credits",
         "",
@@ -511,14 +516,15 @@ def show_credits(screen, clock):
             screen.blit(text, line_rect)
         pygame.display.flip()
         scroll_y -= 70 * dt
+        await asyncio.sleep(0)
 
 
-def run_game() -> None:
+async def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
-    img_dir = Path(__file__).resolve().parent / "images"
+    img_dir = Path(__file__).parent / "images"
 
-    if not show_main_menu(screen, clock, img_dir):
+    if not await show_main_menu(screen, clock, img_dir):
         return
 
     loading_started_at = show_loading_screen(screen)
@@ -577,10 +583,10 @@ def run_game() -> None:
     )
     ores = [(position, sprite, ORE_HITS) for position, sprite in ores]
 
-    if not keep_loading_screen_visible(clock, loading_started_at):
+    if not await keep_loading_screen_visible(clock, loading_started_at):
         return
 
-    if not show_intro_screen(screen, clock):
+    if not await show_intro_screen(screen, clock):
         return
 
     center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
@@ -631,7 +637,7 @@ def run_game() -> None:
                 and event.key == pygame.K_e
                 and near_shopkeeper
             ):
-                running, ore_count, owns_launchpad = show_shop_menu(
+                running, ore_count, owns_launchpad = await show_shop_menu(
                     screen, clock, ore_count, owns_launchpad
                 )
                 break
@@ -669,7 +675,7 @@ def run_game() -> None:
             player_health > 0
             and pos.distance_to(portal_pos) <= PORTAL_INTERACTION_DISTANCE
         ):
-            show_credits(screen, clock)
+            await show_credits(screen, clock)
             return
 
         is_moving = pos != prev_pos
@@ -757,15 +763,16 @@ def run_game() -> None:
             pygame.draw.rect(screen, (26, 17, 20), message_rect.inflate(32, 20))
             screen.blit(death_message, message_rect)
         pygame.display.flip()
+        await asyncio.sleep(0)
 
 
-def main() -> None:
+async def main() -> None:
     pygame.init()
     try:
-        run_game()
+        await run_game()
     finally:
         pygame.quit()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
