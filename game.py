@@ -18,6 +18,8 @@ ENTRANCE_FRACTION = (0.13, 0.65)
 SNAKE_SPEED = 185
 SNAKE_SIZE = (60, 60)
 SNAKE_FRAME_DURATION = 0.1
+LAUNCHPAD_AREA = (630, 347, 41, 36)
+PORTAL_LANDING = (689, 135)
 
 
 def get_background_color(cave_img: pygame.Surface) -> tuple[int, int, int]:
@@ -286,6 +288,15 @@ def run_game() -> None:
     tile_size = GRID_TILE_SIZE * MAP_SCALE
     sprites = load_sprites(img_dir)
 
+    launchpad_area = pygame.Rect(*(value * MAP_SCALE for value in LAUNCHPAD_AREA))
+    launchpad = pygame.image.load(img_dir / "pixil-frame-0(2).png").convert_alpha()
+    launchpad = launchpad.subsurface(launchpad.get_bounding_rect())
+    pad_width = launchpad_area.width
+    pad_height = round(launchpad.get_height() * pad_width / launchpad.get_width())
+    launchpad = pygame.transform.scale(launchpad, (pad_width, pad_height))
+    launchpad_placed = False
+    portal_pos = find_spawn(pygame.Vector2(PORTAL_LANDING) * MAP_SCALE, grid, tile_size)
+
     spawn_x, spawn_y = ENTRANCE_FRACTION
     spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
     pos = find_spawn(spawn_target, grid, tile_size)
@@ -306,6 +317,12 @@ def run_game() -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
+                if launchpad_area.collidepoint(pos.x, pos.y):
+                    if launchpad_placed:
+                        pos = portal_pos.copy()
+                    else:
+                        launchpad_placed = True
 
         keys = pygame.key.get_pressed()
         move = pygame.Vector2(int(keys[pygame.K_d]) - int(keys[pygame.K_a]), int(keys[pygame.K_s]) - int(keys[pygame.K_w]))
@@ -348,6 +365,9 @@ def run_game() -> None:
 
         screen.fill((0, 0, 0))
         screen.blit(world, (-round(cam_x), -round(cam_y)))
+        if launchpad_placed:
+            pad_rect = launchpad.get_rect(center=launchpad_area.center)
+            screen.blit(launchpad, pad_rect.move(-round(cam_x), -round(cam_y)))
         snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
         screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
