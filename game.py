@@ -22,6 +22,7 @@ SNAKE_SIZE = (60, 60)
 SNAKE_FRAME_DURATION = 0.1
 LAUNCHPAD_AREA = (630, 347, 41, 36)
 PORTAL_LANDING = (689, 135)
+PORTAL_LAUNCH_ARRIVAL = (664, 216)
 PORTAL_INTERACTION_DISTANCE = 32 * MAP_SCALE
 MAX_HEALTH = 100
 ATTACK_DAMAGE = 25
@@ -472,21 +473,44 @@ def draw_health_bar(screen, frame, position, health, color):
     screen.blit(frame, position)
 
 
-def show_game_over(screen, clock, img_dir):
-    artwork = pygame.image.load(img_dir / "pixil-frame-0 (1).png").convert_alpha()
-    artwork = artwork.subsurface(artwork.get_bounding_rect())
-    artwork = pygame.transform.scale_by(artwork, 4)
-    screen.fill((0, 0, 0))
-    screen.blit(artwork, artwork.get_rect(center=screen.get_rect().center))
-    pygame.display.flip()
+def show_credits(screen, clock):
+    credits_lines = (
+        "Credits",
+        "",
+        "Jonathan Alsgaard - Game Idea, Programmer",
+        "Essa Khan - Artist, Developer",
+        "Declyn Edwards - Lead Artist",
+        "Made for Hackclub 2026",
+        "HAVEN DC BABY",
+    )
+    heading_font = pygame.font.Font(None, 56)
+    credits_font = pygame.font.Font(None, 42)
+    scroll_y = float(screen.get_height())
+    line_spacing = 56
 
-    while True:
+    while scroll_y + len(credits_lines) * line_spacing > 0:
+        dt = clock.tick(60) / 1000
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
-            if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+            if event.type == pygame.KEYDOWN and event.key in (
+                pygame.K_RETURN,
+                pygame.K_ESCAPE,
+            ):
                 return
-        clock.tick(60)
+
+        screen.fill((0, 0, 0))
+        for line_number, line in enumerate(credits_lines):
+            if not line:
+                continue
+            font = heading_font if line_number == 0 else credits_font
+            text = font.render(line, True, (255, 255, 255))
+            line_rect = text.get_rect(
+                center=(screen.get_width() // 2, round(scroll_y + line_number * line_spacing))
+            )
+            screen.blit(text, line_rect)
+        pygame.display.flip()
+        scroll_y -= 70 * dt
 
 
 def run_game() -> None:
@@ -506,6 +530,7 @@ def run_game() -> None:
     ore_images = load_ore_images(img_dir)
     mining_frames = load_mining_frames(img_dir)
     mining_started = None
+    mining_target = None
     ore_count = 0
     owns_launchpad = False
     health_bar = pygame.image.load(img_dir / "health_bar.png").convert_alpha()
@@ -522,6 +547,9 @@ def run_game() -> None:
     launchpad = pygame.transform.scale(launchpad, (pad_width, pad_height))
     launchpad_placed = False
     portal_pos = find_spawn(pygame.Vector2(PORTAL_LANDING) * MAP_SCALE, grid, tile_size)
+    launch_arrival_pos = find_spawn(
+        pygame.Vector2(PORTAL_LAUNCH_ARRIVAL) * MAP_SCALE, grid, tile_size
+    )
 
     spawn_x, spawn_y = ENTRANCE_FRACTION
     spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
@@ -579,23 +607,23 @@ def run_game() -> None:
                     if snake_health == 0:
                         snake_respawn_at = pygame.time.get_ticks() + SNAKE_RESPAWN_MS
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
-                mining_started = pygame.time.get_ticks()
+                mining_started = None
+                mining_target = None
                 if ores:
                     index = min(range(len(ores)), key=lambda i: pos.distance_squared_to(ores[i][0]))
                     ore_pos, ore_image, hits_left = ores[index]
                     if pos.distance_to(ore_pos) <= MINING_RANGE:
+                        mining_started = pygame.time.get_ticks()
+                        mining_target = ore_pos.copy()
                         if hits_left == 1:
                             ores.pop(index)
                             ore_count += 1
                         else:
                             ores[index] = (ore_pos, ore_image, hits_left - 1)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
-                if pos.distance_to(portal_pos) <= PORTAL_INTERACTION_DISTANCE:
-                    show_game_over(screen, clock, img_dir)
-                    return
                 if owns_launchpad and launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
-                        pos = portal_pos.copy()
+                        pos = launch_arrival_pos.copy()
                     else:
                         launchpad_placed = True
             elif (
@@ -637,6 +665,13 @@ def run_game() -> None:
             ):
                 pos.y = cand.y
 
+        if (
+            player_health > 0
+            and pos.distance_to(portal_pos) <= PORTAL_INTERACTION_DISTANCE
+        ):
+            show_credits(screen, clock)
+            return
+
         is_moving = pos != prev_pos
         if is_moving:
             anim_timer += dt
@@ -646,12 +681,12 @@ def run_game() -> None:
         frames = sprites[facing]
         frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
         current_frame = frames[frame_idx if is_moving else 0]
+        mining_frame = None
         if mining_started is not None:
             mining_frame = (pygame.time.get_ticks() - mining_started) // MINING_FRAME_MS
             if player_health == 0 or mining_frame >= len(mining_frames):
                 mining_started = None
-            else:
-                current_frame = mining_frames[mining_frame]
+                mining_target = None
 
         if snake_respawn_at is not None and pygame.time.get_ticks() >= snake_respawn_at:
             snake.tile = snake.next_tile = snake_spawn_tile
@@ -691,6 +726,15 @@ def run_game() -> None:
             screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
+        if mining_target is not None and mining_frame is not None:
+            mining_effect = mining_frames[mining_frame]
+            mining_rect = mining_effect.get_rect(
+                center=(
+                    round(mining_target.x - cam_x),
+                    round(mining_target.y - cam_y),
+                )
+            )
+            screen.blit(mining_effect, mining_rect)
         if near_shopkeeper:
             prompt = prompt_font.render(
                 "Press E to enter shop menu", True, (255, 255, 255)
