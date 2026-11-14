@@ -22,6 +22,7 @@ SNAKE_SIZE = (60, 60)
 SNAKE_FRAME_DURATION = 0.1
 LAUNCHPAD_AREA = (630, 347, 41, 36)
 PORTAL_LANDING = (689, 135)
+PORTAL_INTERACTION_DISTANCE = 32 * MAP_SCALE
 MAX_HEALTH = 100
 ATTACK_DAMAGE = 25
 ATTACK_RANGE = 85
@@ -471,6 +472,23 @@ def draw_health_bar(screen, frame, position, health, color):
     screen.blit(frame, position)
 
 
+def show_game_over(screen, clock, img_dir):
+    artwork = pygame.image.load(img_dir / "pixil-frame-0 (1).png").convert_alpha()
+    artwork = artwork.subsurface(artwork.get_bounding_rect())
+    artwork = pygame.transform.scale_by(artwork, 4)
+    screen.fill((0, 0, 0))
+    screen.blit(artwork, artwork.get_rect(center=screen.get_rect().center))
+    pygame.display.flip()
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_RETURN, pygame.K_ESCAPE):
+                return
+        clock.tick(60)
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -571,8 +589,11 @@ def run_game() -> None:
                             ore_count += 1
                         else:
                             ores[index] = (ore_pos, ore_image, hits_left - 1)
-            elif owns_launchpad and event.type == pygame.KEYDOWN and event.key == pygame.K_z:
-                if launchpad_area.collidepoint(pos.x, pos.y):
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
+                if pos.distance_to(portal_pos) <= PORTAL_INTERACTION_DISTANCE:
+                    show_game_over(screen, clock, img_dir)
+                    return
+                if owns_launchpad and launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
                         pos = portal_pos.copy()
                     else:
