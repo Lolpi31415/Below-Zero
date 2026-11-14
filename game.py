@@ -27,6 +27,7 @@ ATTACK_DAMAGE = 25
 ATTACK_RANGE = 85
 CONTACT_DAMAGE = 20
 CONTACT_COOLDOWN = 0.8
+SNAKE_RESPAWN_MS = 30_000
 ORE_COUNT = 24
 ORE_SIZE = (48, 48)
 PORTAL_ORE_CLEARANCE_TILES = 5
@@ -431,6 +432,16 @@ def show_shop_menu(screen: pygame.Surface, clock) -> bool:
         clock.tick(60)
 
 
+def draw_health_bar(screen, frame, position, health, color):
+    x, y = position
+    width, height = frame.get_size()
+    fill = pygame.Rect(x + 5, y + 7, width - 11, height - 14)
+    pygame.draw.rect(screen, (35, 22, 24), fill)
+    fill.width = round(fill.width * health / MAX_HEALTH)
+    pygame.draw.rect(screen, color, fill)
+    screen.blit(frame, position)
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -473,6 +484,8 @@ def run_game() -> None:
     shopkeeper = pygame.transform.scale(shopkeeper, NPC_SIZE)
     shopkeeper_pos = find_shopkeeper_position(pos, grid, tile_size)
     snake = Snake(img_dir, pos, grid, tile_size)
+    snake_spawn_tile = snake.tile
+    snake_respawn_at = None
     ores = scatter_ores(
         grid,
         tile_size,
@@ -503,6 +516,16 @@ def run_game() -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            elif player_health == 0:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                    player_health = MAX_HEALTH
+                    pos = entrance_pos.copy()
+                    contact_cooldown = CONTACT_COOLDOWN
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if snake_health > 0 and pos.distance_to(snake.pos) <= ATTACK_RANGE:
+                    snake_health = max(0, snake_health - ATTACK_DAMAGE)
+                    if snake_health == 0:
+                        snake_respawn_at = pygame.time.get_ticks() + SNAKE_RESPAWN_MS
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
                 if launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
@@ -555,6 +578,14 @@ def run_game() -> None:
         frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
         current_frame = frames[frame_idx if is_moving else 0]
 
+        if snake_respawn_at is not None and pygame.time.get_ticks() >= snake_respawn_at:
+            snake.tile = snake.next_tile = snake_spawn_tile
+            snake.pos = snake.centers[snake_spawn_tile].copy()
+            snake.facing = "down"
+            snake.anim_timer = 0.0
+            snake_health = MAX_HEALTH
+            snake_respawn_at = None
+
         if snake_health > 0:
             snake_frame = snake.update(pos, dt if player_health > 0 else 0)
             contact_cooldown = max(0, contact_cooldown - dt)
@@ -580,8 +611,9 @@ def run_game() -> None:
             center=(round(shopkeeper_pos.x - cam_x), round(shopkeeper_pos.y - cam_y))
         )
         screen.blit(shopkeeper, shopkeeper_rect)
-        snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
-        screen.blit(snake_frame, snake_rect)
+        if snake_health > 0:
+            snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
+            screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
         if near_shopkeeper:
@@ -593,6 +625,14 @@ def run_game() -> None:
             )
             pygame.draw.rect(screen, (20, 24, 28), prompt_rect.inflate(24, 14))
             screen.blit(prompt, prompt_rect)
+        if snake_health > 0:
+            bar_pos = (snake_rect.centerx - health_bar.get_width() // 2, snake_rect.top - health_bar.get_height())
+            draw_health_bar(screen, health_bar, bar_pos, snake_health, (216, 107, 48))
+        draw_health_bar(screen, health_bar, (16, 16), player_health, (208, 55, 68))
+        if player_health == 0:
+            message_rect = death_message.get_rect(center=screen.get_rect().center)
+            pygame.draw.rect(screen, (26, 17, 20), message_rect.inflate(32, 20))
+            screen.blit(death_message, message_rect)
         pygame.display.flip()
 
 
