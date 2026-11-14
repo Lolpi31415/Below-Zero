@@ -29,6 +29,10 @@ CONTACT_DAMAGE = 20
 CONTACT_COOLDOWN = 0.8
 SNAKE_RESPAWN_MS = 30_000
 ORE_COUNT = 24
+ORE_HITS = 5
+MINING_RANGE = 85
+MINING_FRAME_MS = 50
+LAUNCHPAD_COST = 5
 ORE_SIZE = (48, 48)
 PORTAL_ORE_CLEARANCE_TILES = 5
 NPC_SIZE = (64, 96)
@@ -406,30 +410,55 @@ def show_intro_screen(screen: pygame.Surface, clock) -> bool:
         clock.tick(60)
 
 
-def show_shop_menu(screen: pygame.Surface, clock) -> bool:
+def show_shop_menu(screen, clock, ore_count, owns_launchpad):
     title_font = pygame.font.Font(None, 56)
     item_font = pygame.font.Font(None, 38)
     prompt_font = pygame.font.Font(None, 28)
+    center_x = screen.get_width() // 2
+    buy_button = pygame.Rect(0, 0, 210, 48)
+    buy_button.center = (center_x, 410)
 
     while True:
+        can_buy = not owns_launchpad and ore_count >= LAUNCHPAD_COST
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                return False
-            if event.type == pygame.KEYDOWN and event.key in (
-                pygame.K_e,
-                pygame.K_ESCAPE,
+                return False, ore_count, owns_launchpad
+            if event.type == pygame.KEYDOWN and event.key in (pygame.K_e, pygame.K_ESCAPE):
+                return True, ore_count, owns_launchpad
+            if (
+                can_buy and event.type == pygame.MOUSEBUTTONDOWN
+                and event.button == 1 and buy_button.collidepoint(event.pos)
             ):
-                return True
+                ore_count -= LAUNCHPAD_COST
+                owns_launchpad = True
+                can_buy = False
 
         screen.fill((18, 22, 27))
         title = title_font.render("Shop", True, (245, 230, 225))
-        item = item_font.render("Launch Pad - 5 ores", True, (235, 205, 145))
+        item = item_font.render(f"Launch Pad - {LAUNCHPAD_COST} ores", True, (235, 205, 145))
+        balance = prompt_font.render(f"Ores: {ore_count}", True, (220, 220, 220))
+        label = "Buy" if can_buy else "Purchased" if owns_launchpad else "Need more ores"
+        button_text = prompt_font.render(label, True, (245, 230, 225))
         prompt = prompt_font.render("Press E or Esc to return", True, (220, 220, 220))
-        screen.blit(title, title.get_rect(center=(screen.get_width() // 2, 220)))
-        screen.blit(item, item.get_rect(center=(screen.get_width() // 2, 330)))
-        screen.blit(prompt, prompt.get_rect(center=(screen.get_width() // 2, 500)))
+        screen.blit(title, title.get_rect(center=(center_x, 220)))
+        screen.blit(balance, balance.get_rect(center=(center_x, 275)))
+        screen.blit(item, item.get_rect(center=(center_x, 330)))
+        pygame.draw.rect(screen, (128, 74, 44) if can_buy else (61, 63, 67), buy_button)
+        screen.blit(button_text, button_text.get_rect(center=buy_button.center))
+        screen.blit(prompt, prompt.get_rect(center=(center_x, 500)))
         pygame.display.flip()
         clock.tick(60)
+
+
+def load_mining_frames(img_dir):
+    strip = pygame.image.load(img_dir / "mining_animation.png").convert()
+    size = strip.get_height()
+    frames = []
+    for x in range(0, strip.get_width(), size):
+        frame = pygame.transform.scale(strip.subsurface((x, 0, size, size)), FRAME_SIZE)
+        frame.set_colorkey((255, 255, 255))
+        frames.append(frame)
+    return frames
 
 
 def draw_health_bar(screen, frame, position, health, color):
@@ -457,6 +486,10 @@ def run_game() -> None:
     tile_size = GRID_TILE_SIZE * MAP_SCALE
     sprites = load_sprites(img_dir)
     ore_images = load_ore_images(img_dir)
+    mining_frames = load_mining_frames(img_dir)
+    mining_started = None
+    ore_count = 0
+    owns_launchpad = False
     health_bar = pygame.image.load(img_dir / "health_bar.png").convert_alpha()
     death_message = pygame.font.Font(None, 44).render(
         "You died. Press Enter to respawn.", True, (255, 255, 255)
@@ -496,6 +529,7 @@ def run_game() -> None:
         ore_images,
         ore_spawn_exclusion,
     )
+    ores = [(position, sprite, ORE_HITS) for position, sprite in ores]
 
     if not keep_loading_screen_visible(clock, loading_started_at):
         return
@@ -526,7 +560,18 @@ def run_game() -> None:
                     snake_health = max(0, snake_health - ATTACK_DAMAGE)
                     if snake_health == 0:
                         snake_respawn_at = pygame.time.get_ticks() + SNAKE_RESPAWN_MS
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                mining_started = pygame.time.get_ticks()
+                if ores:
+                    index = min(range(len(ores)), key=lambda i: pos.distance_squared_to(ores[i][0]))
+                    ore_pos, ore_image, hits_left = ores[index]
+                    if pos.distance_to(ore_pos) <= MINING_RANGE:
+                        if hits_left == 1:
+                            ores.pop(index)
+                            ore_count += 1
+                        else:
+                            ores[index] = (ore_pos, ore_image, hits_left - 1)
+            elif owns_launchpad and event.type == pygame.KEYDOWN and event.key == pygame.K_z:
                 if launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
                         pos = portal_pos.copy()
@@ -537,7 +582,10 @@ def run_game() -> None:
                 and event.key == pygame.K_e
                 and near_shopkeeper
             ):
-                running = show_shop_menu(screen, clock)
+                running, ore_count, owns_launchpad = show_shop_menu(
+                    screen, clock, ore_count, owns_launchpad
+                )
+                break
 
         keys = pygame.key.get_pressed()
         move = pygame.Vector2(int(keys[pygame.K_d]) - int(keys[pygame.K_a]), int(keys[pygame.K_s]) - int(keys[pygame.K_w]))
@@ -577,6 +625,12 @@ def run_game() -> None:
         frames = sprites[facing]
         frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
         current_frame = frames[frame_idx if is_moving else 0]
+        if mining_started is not None:
+            mining_frame = (pygame.time.get_ticks() - mining_started) // MINING_FRAME_MS
+            if player_health == 0 or mining_frame >= len(mining_frames):
+                mining_started = None
+            else:
+                current_frame = mining_frames[mining_frame]
 
         if snake_respawn_at is not None and pygame.time.get_ticks() >= snake_respawn_at:
             snake.tile = snake.next_tile = snake_spawn_tile
@@ -599,7 +653,7 @@ def run_game() -> None:
 
         screen.fill((0, 0, 0))
         screen.blit(world, (-round(cam_x), -round(cam_y)))
-        for ore_pos, ore_image in ores:
+        for ore_pos, ore_image, _ in ores:
             ore_rect = ore_image.get_rect(
                 center=(round(ore_pos.x - cam_x), round(ore_pos.y - cam_y))
             )
@@ -629,6 +683,10 @@ def run_game() -> None:
             bar_pos = (snake_rect.centerx - health_bar.get_width() // 2, snake_rect.top - health_bar.get_height())
             draw_health_bar(screen, health_bar, bar_pos, snake_health, (216, 107, 48))
         draw_health_bar(screen, health_bar, (16, 16), player_health, (208, 55, 68))
+        ore_text = prompt_font.render(f"Ores: {ore_count}", True, (255, 255, 255))
+        ore_rect = ore_text.get_rect(topleft=(20, 56))
+        pygame.draw.rect(screen, (20, 24, 28), ore_rect.inflate(8, 6))
+        screen.blit(ore_text, ore_rect)
         if player_health == 0:
             message_rect = death_message.get_rect(center=screen.get_rect().center)
             pygame.draw.rect(screen, (26, 17, 20), message_rect.inflate(32, 20))
