@@ -11,9 +11,10 @@ BLACK_SAMPLE_RATIO = 0.5
 SPEED = 300
 FRAME_SIZE = (80, 80)
 FRAME_DURATION = 0.12
+LOADING_SCREEN_DURATION_MS = 1500
 HITBOX_HALF = (18, 12)
 DIRECTIONS = ("down", "right", "up", "left")
-ENTRANCE_FRACTION = (0.25, 0.28)  # Moved to the upper-left entrance ladder
+ENTRANCE_FRACTION = (0.13, 0.65)  # Ladder shown in the lower-left cave area
 
 
 def get_background_color(cave_img: pygame.Surface) -> tuple[int, int, int]:
@@ -106,11 +107,75 @@ def load_sprites(dir_path: Path) -> dict[str, list[pygame.Surface]]:
     }
 
 
+def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
+    background = pygame.image.load(img_dir / "mainmenubg.png").convert()
+    background = pygame.transform.scale(background, screen.get_size())
+    button_font = pygame.font.Font(None, 44)
+    start_button = pygame.Rect(90, 490, 260, 64)
+    quit_button = pygame.Rect(90, 570, 260, 64)
+
+    while True:
+        mouse_pos = pygame.mouse.get_pos()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                    return True
+                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                    return False
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if start_button.collidepoint(event.pos):
+                    return True
+                if quit_button.collidepoint(event.pos):
+                    return False
+
+        screen.blit(background, (0, 0))
+        for label, button in (
+            ("Start Game", start_button),
+            ("Quit", quit_button),
+        ):
+            hovered = button.collidepoint(mouse_pos)
+            fill = (35, 44, 49, 220) if hovered else (12, 19, 24, 190)
+            button_surface = pygame.Surface(button.size, pygame.SRCALPHA)
+            button_surface.fill(fill)
+            screen.blit(button_surface, button.topleft)
+            pygame.draw.rect(screen, (213, 105, 117), button, 2, border_radius=8)
+
+            text = button_font.render(label, True, (245, 230, 225))
+            screen.blit(text, text.get_rect(center=button.center))
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
+def show_loading_screen(screen: pygame.Surface) -> int:
+    screen.fill((0, 0, 0))
+    loading_font = pygame.font.Font(None, 40)
+    loading_text = loading_font.render("loading", True, (255, 255, 255))
+    screen.blit(loading_text, loading_text.get_rect(center=screen.get_rect().center))
+    pygame.display.flip()
+    return pygame.time.get_ticks()
+
+
+def keep_loading_screen_visible(clock, shown_at: int) -> bool:
+    while pygame.time.get_ticks() - shown_at < LOADING_SCREEN_DURATION_MS:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+        clock.tick(60)
+    return True
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
     img_dir = Path(__file__).resolve().parent / "images"
 
+    if not show_main_menu(screen, clock, img_dir):
+        return
+
+    loading_started_at = show_loading_screen(screen)
     raw_map = pygame.image.load(img_dir / "cavemap.png").convert()
     world = pygame.transform.scale(raw_map, (raw_map.get_width() * MAP_SCALE, raw_map.get_height() * MAP_SCALE))
     grid = build_grid(raw_map)
@@ -120,6 +185,9 @@ def run_game() -> None:
     spawn_x, spawn_y = ENTRANCE_FRACTION
     spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
     pos = find_spawn(spawn_target, grid, tile_size)
+
+    if not keep_loading_screen_visible(clock, loading_started_at):
+        return
 
     center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
     facing = "down"
@@ -148,7 +216,8 @@ def run_game() -> None:
         if has_input:
             step_x = move.x * SPEED * dt
             cand = pygame.Vector2(pos.x + step_x, pos.y)
-            if can_stand(cand, grid, tile_size):
+            if can_stand(cand,
+             grid, tile_size):
                 pos.x = cand.x
 
             step_y = move.y * SPEED * dt
