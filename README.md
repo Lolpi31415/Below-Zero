@@ -18,3 +18,5 @@ Game is a simple WASD movement mechanics. Users must left click in order to dama
 You can either download the game or play it on https://kingessa-0.itch.io/below-zero
 
 # MADE FOR HAVEN DC, HACKCLUB
+<img width="831" height="959" alt="Screenshot_20261114_175235" src="https://github.com/user-attachments/assets/b838f193-1558-405b-9939-78b3b7bd99db" />
+
