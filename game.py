@@ -1,5 +1,7 @@
 from collections import deque
 from pathlib import Path
+import random
+
 import pygame
 
 WINDOW_SIZE = (1280, 720)
@@ -18,6 +20,13 @@ ENTRANCE_FRACTION = (0.13, 0.65)
 SNAKE_SPEED = 185
 SNAKE_SIZE = (60, 60)
 SNAKE_FRAME_DURATION = 0.1
+ORE_COUNT = 24
+ORE_SIZE = (48, 48)
+ORE_IMAGE_FILES = (
+    "stoneore.png",
+    "Screenshot_2026-11-14_at_11.55.42_AM-removebg-preview.png",
+    "Screenshot_2026-11-14_at_11.55.42_AM__2_-removebg-preview.png",
+)
 
 
 def get_background_color(cave_img: pygame.Surface) -> tuple[int, int, int]:
@@ -106,6 +115,46 @@ def load_sprites(dir_path: Path) -> dict[str, list[pygame.Surface]]:
         ]
         for dir in DIRECTIONS
     }
+
+
+def load_ore_images(img_dir: Path) -> list[pygame.Surface]:
+    return [
+        pygame.transform.scale(
+            pygame.image.load(img_dir / filename).convert_alpha(),
+            ORE_SIZE,
+        )
+        for filename in ORE_IMAGE_FILES
+    ]
+
+
+def scatter_ores(grid, tile_size, player_pos, snake_pos, ore_images):
+    candidates = []
+    for row, tiles in enumerate(grid):
+        for col, blocked in enumerate(tiles):
+            if blocked:
+                continue
+
+            position = pygame.Vector2(
+                (col + 0.5) * tile_size,
+                (row + 0.5) * tile_size,
+            )
+            if not can_stand(position, grid, tile_size):
+                continue
+            if position.distance_to(player_pos) < 3 * tile_size:
+                continue
+            if position.distance_to(snake_pos) < 3 * tile_size:
+                continue
+            candidates.append(position)
+
+    random.shuffle(candidates)
+    ores = []
+    for position in candidates:
+        if any(position.distance_to(other_pos) < 2 * tile_size for other_pos, _ in ores):
+            continue
+        ores.append((position, random.choice(ore_images)))
+        if len(ores) == ORE_COUNT:
+            break
+    return ores
 
 
 def cave_routes(grid, tile_size):
@@ -271,6 +320,47 @@ def keep_loading_screen_visible(clock, shown_at: int) -> bool:
     return True
 
 
+def show_intro_screen(screen: pygame.Surface, clock) -> bool:
+    story_font = pygame.font.Font(None, 42)
+    prompt_font = pygame.font.Font(None, 30)
+    story_lines = (
+        "The cave you were exploring has collapsed!",
+        "You must mine some ores and buy a launch pad to",
+        "BOUNCE BACK out of the cave.",
+        "Also watch out for the snek."
+    )
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN and event.key in (
+                pygame.K_RETURN,
+                pygame.K_SPACE,
+            ):
+                return True
+
+        screen.fill((0, 0, 0))
+        for line_number, line in enumerate(story_lines):
+            text = story_font.render(line, True, (255, 255, 255))
+            screen.blit(
+                text,
+                text.get_rect(center=(screen.get_width() // 2, 260 + line_number * 56)),
+            )
+
+        prompt = prompt_font.render(
+            "Use WASD to move. Press Enter or Space to begin.",
+            True,
+            (255, 255, 255),
+        )
+        screen.blit(
+            prompt,
+            prompt.get_rect(center=(screen.get_width() // 2, 500)),
+        )
+        pygame.display.flip()
+        clock.tick(60)
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -285,14 +375,19 @@ def run_game() -> None:
     grid = build_grid(raw_map)
     tile_size = GRID_TILE_SIZE * MAP_SCALE
     sprites = load_sprites(img_dir)
+    ore_images = load_ore_images(img_dir)
 
     spawn_x, spawn_y = ENTRANCE_FRACTION
     spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
     pos = find_spawn(spawn_target, grid, tile_size)
 
     snake = Snake(img_dir, pos, grid, tile_size)
+    ores = scatter_ores(grid, tile_size, pos, snake.pos, ore_images)
 
     if not keep_loading_screen_visible(clock, loading_started_at):
+        return
+
+    if not show_intro_screen(screen, clock):
         return
 
     center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
@@ -348,6 +443,11 @@ def run_game() -> None:
 
         screen.fill((0, 0, 0))
         screen.blit(world, (-round(cam_x), -round(cam_y)))
+        for ore_pos, ore_image in ores:
+            ore_rect = ore_image.get_rect(
+                center=(round(ore_pos.x - cam_x), round(ore_pos.y - cam_y))
+            )
+            screen.blit(ore_image, ore_rect)
         snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
         screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
