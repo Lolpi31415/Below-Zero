@@ -29,6 +29,10 @@ CONTACT_DAMAGE = 20
 CONTACT_COOLDOWN = 0.8
 ORE_COUNT = 24
 ORE_SIZE = (48, 48)
+PORTAL_ORE_CLEARANCE_TILES = 5
+NPC_SIZE = (64, 96)
+NPC_COLLISION_DISTANCE = 58
+SHOP_INTERACTION_DISTANCE = 144
 ORE_IMAGE_FILES = (
     "stoneore.png",
     "Screenshot_2026-11-14_at_11.55.42_AM-removebg-preview.png",
@@ -134,7 +138,16 @@ def load_ore_images(img_dir: Path) -> list[pygame.Surface]:
     ]
 
 
-def scatter_ores(grid, tile_size, player_pos, snake_pos, ore_images):
+def scatter_ores(
+    grid,
+    tile_size,
+    player_pos,
+    snake_pos,
+    npc_pos,
+    portal_pos,
+    ore_images,
+    excluded_area,
+):
     candidates = []
     for row, tiles in enumerate(grid):
         for col, blocked in enumerate(tiles):
@@ -150,6 +163,12 @@ def scatter_ores(grid, tile_size, player_pos, snake_pos, ore_images):
             if position.distance_to(player_pos) < 3 * tile_size:
                 continue
             if position.distance_to(snake_pos) < 3 * tile_size:
+                continue
+            if position.distance_to(npc_pos) < 3 * tile_size:
+                continue
+            if position.distance_to(portal_pos) < PORTAL_ORE_CLEARANCE_TILES * tile_size:
+                continue
+            if excluded_area.collidepoint(position):
                 continue
             candidates.append(position)
 
@@ -190,6 +209,24 @@ def find_routes(start, neighbors):
                 previous[next_tile] = tile
                 queue.append(next_tile)
     return previous
+
+
+def find_shopkeeper_position(player_pos, grid, tile_size):
+    centers, neighbors = cave_routes(grid, tile_size)
+    start = int(player_pos.x // tile_size), int(player_pos.y // tile_size)
+    reachable = find_routes(start, neighbors)
+    far_corner = pygame.Vector2(
+        (len(grid[0]) - 0.5) * tile_size,
+        0.5 * tile_size,
+    )
+    distant_positions = [
+        centers[tile]
+        for tile in reachable
+        if centers[tile].distance_to(player_pos) >= 5 * tile_size
+    ]
+    if not distant_positions:
+        distant_positions = [centers[tile] for tile in reachable]
+    return min(distant_positions, key=lambda pos: pos.distance_to(far_corner))
 
 
 class Snake:
@@ -368,16 +405,6 @@ def show_intro_screen(screen: pygame.Surface, clock) -> bool:
         clock.tick(60)
 
 
-def draw_health_bar(screen, frame, position, health, color):
-    x, y = position
-    width, height = frame.get_size()
-    fill = pygame.Rect(x + 5, y + 7, width - 11, height - 14)
-    pygame.draw.rect(screen, (35, 22, 24), fill)
-    fill.width = round(fill.width * health / MAX_HEALTH)
-    pygame.draw.rect(screen, color, fill)
-    screen.blit(frame, position)
-
-
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -399,6 +426,7 @@ def run_game() -> None:
     )
 
     launchpad_area = pygame.Rect(*(value * MAP_SCALE for value in LAUNCHPAD_AREA))
+    ore_spawn_exclusion = launchpad_area.inflate(*ORE_SIZE)
     launchpad = pygame.image.load(img_dir / "pixil-frame-0(2).png").convert_alpha()
     launchpad = launchpad.subsurface(launchpad.get_bounding_rect())
     pad_width = launchpad_area.width
@@ -415,8 +443,20 @@ def run_game() -> None:
     snake_health = MAX_HEALTH
     contact_cooldown = 0.0
 
+    shopkeeper = pygame.image.load(img_dir / "pixilart-drawing.png").convert_alpha()
+    shopkeeper = pygame.transform.scale(shopkeeper, NPC_SIZE)
+    shopkeeper_pos = find_shopkeeper_position(pos, grid, tile_size)
     snake = Snake(img_dir, pos, grid, tile_size)
-    ores = scatter_ores(grid, tile_size, pos, snake.pos, ore_images)
+    ores = scatter_ores(
+        grid,
+        tile_size,
+        pos,
+        snake.pos,
+        shopkeeper_pos,
+        portal_pos,
+        ore_images,
+        ore_spawn_exclusion,
+    )
 
     if not keep_loading_screen_visible(clock, loading_started_at):
         return
@@ -427,22 +467,16 @@ def run_game() -> None:
     center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
     facing = "down"
     anim_timer = 0.0
+    prompt_font = pygame.font.Font(None, 28)
     running = True
 
     while running:
         dt = min(clock.tick(60) / 1000, 0.05)
+        near_shopkeeper = pos.distance_to(shopkeeper_pos) <= SHOP_INTERACTION_DISTANCE
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            elif player_health == 0:
-                if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-                    player_health = MAX_HEALTH
-                    pos = entrance_pos.copy()
-                    contact_cooldown = CONTACT_COOLDOWN
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                if snake_health > 0 and pos.distance_to(snake.pos) <= ATTACK_RANGE:
-                    snake_health = max(0, snake_health - ATTACK_DAMAGE)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
                 if launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
@@ -465,13 +499,18 @@ def run_game() -> None:
         if has_input:
             step_x = move.x * SPEED * dt
             cand = pygame.Vector2(pos.x + step_x, pos.y)
-            if can_stand(cand,
-             grid, tile_size):
+            if (
+                can_stand(cand, grid, tile_size)
+                and cand.distance_to(shopkeeper_pos) >= NPC_COLLISION_DISTANCE
+            ):
                 pos.x = cand.x
 
             step_y = move.y * SPEED * dt
             cand = pygame.Vector2(pos.x, pos.y + step_y)
-            if can_stand(cand, grid, tile_size):
+            if (
+                can_stand(cand, grid, tile_size)
+                and cand.distance_to(shopkeeper_pos) >= NPC_COLLISION_DISTANCE
+            ):
                 pos.y = cand.y
 
         is_moving = pos != prev_pos
@@ -505,19 +544,10 @@ def run_game() -> None:
         if launchpad_placed:
             pad_rect = launchpad.get_rect(center=launchpad_area.center)
             screen.blit(launchpad, pad_rect.move(-round(cam_x), -round(cam_y)))
-        if snake_health > 0:
-            snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
-            screen.blit(snake_frame, snake_rect)
+        snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
+        screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
-        if snake_health > 0:
-            bar_pos = (snake_rect.centerx - health_bar.get_width() // 2, snake_rect.top - health_bar.get_height())
-            draw_health_bar(screen, health_bar, bar_pos, snake_health, (216, 107, 48))
-        draw_health_bar(screen, health_bar, (16, 16), player_health, (208, 55, 68))
-        if player_health == 0:
-            message_rect = death_message.get_rect(center=screen.get_rect().center)
-            pygame.draw.rect(screen, (26, 17, 20), message_rect.inflate(32, 20))
-            screen.blit(death_message, message_rect)
         pygame.display.flip()
 
 
