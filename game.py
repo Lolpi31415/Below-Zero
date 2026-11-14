@@ -13,11 +13,13 @@ FRAME_SIZE = (80, 80)
 FRAME_DURATION = 0.12
 HITBOX_HALF = (18, 12)
 DIRECTIONS = ("down", "right", "up", "left")
-ENTRANCE_FRACTION = (0.25, 0.28)  # Moved to the upper-left entrance ladder
+ENTRANCE_FRACTION = (0.25, 0.28)
+SNAKE_SPEED = 185
+SNAKE_SIZE = (60, 60)
+SNAKE_FRAME_DURATION = 0.1
 
 
 def get_background_color(cave_img: pygame.Surface) -> tuple[int, int, int]:
-    """Sample the background color from the corner void."""
     return cave_img.get_at((0, 0))[:3]
 
 
@@ -31,7 +33,6 @@ def is_black_sample(color: pygame.Color, background: tuple[int, int, int]) -> bo
 
 
 def build_grid(cave_img: pygame.Surface) -> list[list[bool]]:
-    """Block tiles that are mostly the map's black background."""
     bg = get_background_color(cave_img)
     grid = []
 
@@ -106,6 +107,109 @@ def load_sprites(dir_path: Path) -> dict[str, list[pygame.Surface]]:
     }
 
 
+def cave_routes(grid, tile_size):
+    routes = {}
+    for row, tiles in enumerate(grid):
+        for col, blocked in enumerate(tiles):
+            if not blocked:
+                center = pygame.Vector2((col + 0.5) * tile_size, (row + 0.5) * tile_size)
+                if can_stand(center, grid, tile_size):
+                    routes[col, row] = center
+
+    neighbors = {}
+    for col, row in routes:
+        adjacent = ((col, row - 1), (col + 1, row), (col, row + 1), (col - 1, row))
+        neighbors[col, row] = [tile for tile in adjacent if tile in routes]
+    return routes, neighbors
+
+
+def find_routes(start, neighbors):
+    previous = {start: None}
+    queue = deque([start])
+    while queue:
+        tile = queue.popleft()
+        for next_tile in neighbors[tile]:
+            if next_tile not in previous:
+                previous[next_tile] = tile
+                queue.append(next_tile)
+    return previous
+
+
+class Snake:
+    def __init__(self, img_dir, player_pos, grid, tile_size):
+        self.grid = grid
+        self.tile_size = tile_size
+        self.centers, self.neighbors = cave_routes(grid, tile_size)
+        start = self.tile_at(player_pos)
+        reachable = find_routes(start, self.neighbors)
+        self.tile = next(
+            (tile for tile in reachable if self.centers[tile].distance_to(player_pos) >= 7 * tile_size),
+            next(reversed(reachable)),
+        )
+        self.pos = self.centers[self.tile].copy()
+        self.next_tile = self.tile
+        self.player_tile = None
+        self.routes = {}
+        self.facing = "down"
+        self.anim_timer = 0
+        self.idle = {}
+        self.walk = {}
+
+        folder = img_dir / "walk" / "snake"
+        for direction in DIRECTIONS:
+            sprite = pygame.image.load(folder / f"snake_{direction}.png").convert_alpha()
+            self.idle[direction] = pygame.transform.scale(sprite, SNAKE_SIZE)
+            strip = pygame.image.load(folder / f"snake_{direction}_movement.png").convert_alpha()
+            with pygame.PixelArray(strip) as pixels:
+                pixels.replace((255, 255, 255, 255), (0, 0, 0, 0))
+                pixels.replace((76, 76, 76, 255), (34, 177, 76, 255))
+                pixels.replace((36, 36, 36, 255), (237, 28, 36, 255))
+            size = strip.get_height()
+            self.walk[direction] = [
+                pygame.transform.scale(strip.subsurface((x, 0, size, size)), SNAKE_SIZE)
+                for x in range(0, strip.get_width(), size)
+            ]
+
+    def tile_at(self, pos):
+        return int(pos.x // self.tile_size), int(pos.y // self.tile_size)
+
+    def update(self, player_pos, dt):
+        player_tile = self.tile_at(player_pos)
+        if player_tile != self.player_tile:
+            self.player_tile = player_tile
+            self.routes = find_routes(player_tile, self.neighbors) if player_tile in self.neighbors else {}
+
+        if self.pos == self.centers[self.next_tile]:
+            self.tile = self.next_tile
+            self.next_tile = self.routes.get(self.tile) or self.tile
+
+        target = self.centers[self.next_tile]
+        if self.tile == self.next_tile == player_tile:
+            target = player_pos
+
+        step = self.pos.move_towards(target, SNAKE_SPEED * dt)
+        old_pos = self.pos.copy()
+        if can_stand(pygame.Vector2(step.x, self.pos.y), self.grid, self.tile_size):
+            self.pos.x = step.x
+        if can_stand(pygame.Vector2(self.pos.x, step.y), self.grid, self.tile_size):
+            self.pos.y = step.y
+
+        move = self.pos - old_pos
+        if not move.length_squared():
+            self.anim_timer = 0
+            return self.idle[self.facing]
+
+        if abs(move.x) > abs(move.y):
+            self.facing = "right" if move.x > 0 else "left"
+        else:
+            self.facing = "down" if move.y > 0 else "up"
+
+        frames = self.walk[self.facing]
+        frame = frames[int(self.anim_timer / SNAKE_FRAME_DURATION) % len(frames)]
+        self.anim_timer += dt
+        return frame
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -120,6 +224,8 @@ def run_game() -> None:
     spawn_x, spawn_y = ENTRANCE_FRACTION
     spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
     pos = find_spawn(spawn_target, grid, tile_size)
+
+    snake = Snake(img_dir, pos, grid, tile_size)
 
     center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
     facing = "down"
@@ -166,11 +272,15 @@ def run_game() -> None:
         frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
         current_frame = frames[frame_idx if is_moving else 0]
 
+        snake_frame = snake.update(pos, dt)
+
         cam_x = max(0, min(pos.x - center.x, world.get_width() - screen.get_width()))
         cam_y = max(0, min(pos.y - center.y, world.get_height() - screen.get_height()))
 
         screen.fill((0, 0, 0))
         screen.blit(world, (-round(cam_x), -round(cam_y)))
+        snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
+        screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
         pygame.display.flip()
