@@ -405,6 +405,32 @@ def show_intro_screen(screen: pygame.Surface, clock) -> bool:
         clock.tick(60)
 
 
+def show_shop_menu(screen: pygame.Surface, clock) -> bool:
+    title_font = pygame.font.Font(None, 56)
+    item_font = pygame.font.Font(None, 38)
+    prompt_font = pygame.font.Font(None, 28)
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN and event.key in (
+                pygame.K_e,
+                pygame.K_ESCAPE,
+            ):
+                return True
+
+        screen.fill((18, 22, 27))
+        title = title_font.render("Shop", True, (245, 230, 225))
+        item = item_font.render("Launch Pad - 5 ores", True, (235, 205, 145))
+        prompt = prompt_font.render("Press E or Esc to return", True, (220, 220, 220))
+        screen.blit(title, title.get_rect(center=(screen.get_width() // 2, 220)))
+        screen.blit(item, item.get_rect(center=(screen.get_width() // 2, 330)))
+        screen.blit(prompt, prompt.get_rect(center=(screen.get_width() // 2, 500)))
+        pygame.display.flip()
+        clock.tick(60)
+
+
 def run_game() -> None:
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
@@ -483,6 +509,12 @@ def run_game() -> None:
                         pos = portal_pos.copy()
                     else:
                         launchpad_placed = True
+            elif (
+                event.type == pygame.KEYDOWN
+                and event.key == pygame.K_e
+                and near_shopkeeper
+            ):
+                running = show_shop_menu(screen, clock)
 
         keys = pygame.key.get_pressed()
         move = pygame.Vector2(int(keys[pygame.K_d]) - int(keys[pygame.K_a]), int(keys[pygame.K_s]) - int(keys[pygame.K_w]))
@@ -544,10 +576,23 @@ def run_game() -> None:
         if launchpad_placed:
             pad_rect = launchpad.get_rect(center=launchpad_area.center)
             screen.blit(launchpad, pad_rect.move(-round(cam_x), -round(cam_y)))
+        shopkeeper_rect = shopkeeper.get_rect(
+            center=(round(shopkeeper_pos.x - cam_x), round(shopkeeper_pos.y - cam_y))
+        )
+        screen.blit(shopkeeper, shopkeeper_rect)
         snake_rect = snake_frame.get_rect(center=(round(snake.pos.x - cam_x), round(snake.pos.y - cam_y)))
         screen.blit(snake_frame, snake_rect)
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
+        if near_shopkeeper:
+            prompt = prompt_font.render(
+                "Press E to enter shop menu", True, (255, 255, 255)
+            )
+            prompt_rect = prompt.get_rect(
+                center=(screen.get_width() // 2, screen.get_height() - 48)
+            )
+            pygame.draw.rect(screen, (20, 24, 28), prompt_rect.inflate(24, 14))
+            screen.blit(prompt, prompt_rect)
         pygame.display.flip()
 
 
