@@ -1,194 +1,188 @@
+from collections import deque
 from pathlib import Path
 import pygame
 
-pygame.init()
-screen = pygame.display.set_mode((1280, 720))
-clock = pygame.time.Clock()
-running = True
+WINDOW_SIZE = (1280, 720)
+MAP_SCALE = 3
+GRID_TILE_SIZE = 16
+GRID_SAMPLE_STEP = 4
+BACKGROUND_COLOR_TOLERANCE = 28
+BLACK_SAMPLE_RATIO = 0.5
+SPEED = 300
+FRAME_SIZE = (80, 80)
+FRAME_DURATION = 0.12
+HITBOX_HALF = (18, 12)
+DIRECTIONS = ("down", "right", "up", "left")
+ENTRANCE_FRACTION = (0.25, 0.28)  # Moved to the upper-left entrance ladder
 
 
-# get the folder with the animatoins and inmages
-images_dir = Path(__file__).resolve().parent / "images"
-
-map_surface = pygame.image.load(images_dir / "cavemap.png").convert()
-zoom = 3
-bg = pygame.transform.scale(
-    map_surface,
-    (map_surface.get_width() * zoom, map_surface.get_height() * zoom),
-)
-
-grid_cell_size = 16
-world_cell_size = grid_cell_size * zoom
-background_color = map_surface.get_at((0, 0))[:3]
-wall_grid = []
-for grid_y in range(0, map_surface.get_height(), grid_cell_size):
-    row = []
-    for grid_x in range(0, map_surface.get_width(), grid_cell_size):
-        samples = 0
-        wall_samples = 0
-        for y in range(grid_y, min(grid_y + grid_cell_size, map_surface.get_height()), 4):
-            for x in range(grid_x, min(grid_x + grid_cell_size, map_surface.get_width()), 4):
-                color = map_surface.get_at((x, y))
-                color_distance = sum(
-                    abs(color[channel] - background_color[channel])
-                    for channel in range(3)
-                )
-                samples += 1
-                if color_distance > 28:
-                    wall_samples += 1
-        row.append(wall_samples / samples >= 0.25)
-    wall_grid.append(row)
-
-grid_height = len(wall_grid)
-grid_width = len(wall_grid[0])
-player_half_width = 18
-player_half_height = 12
+def get_background_color(cave_img: pygame.Surface) -> tuple[int, int, int]:
+    """Sample the background color from the corner void."""
+    return cave_img.get_at((0, 0))[:3]
 
 
-def can_move_to(position):
-    left = int((position.x - player_half_width) // world_cell_size)
-    right = int((position.x + player_half_width) // world_cell_size)
-    top = int((position.y - player_half_height) // world_cell_size)
-    bottom = int((position.y + player_half_height) // world_cell_size)
+def is_black_sample(color: pygame.Color, background: tuple[int, int, int]) -> bool:
+    channel_differences = (
+        abs(color.r - background[0]),
+        abs(color.g - background[1]),
+        abs(color.b - background[2]),
+    )
+    return sum(channel_differences) <= BACKGROUND_COLOR_TOLERANCE
 
-    for grid_y in range(top, bottom + 1):
-        for grid_x in range(left, right + 1):
-            if (
-                grid_x < 0
-                or grid_y < 0
-                or grid_x >= grid_width
-                or grid_y >= grid_height
-                or wall_grid[grid_y][grid_x]
-            ):
+
+def build_grid(cave_img: pygame.Surface) -> list[list[bool]]:
+    """Block tiles that are mostly the map's black background."""
+    bg = get_background_color(cave_img)
+    grid = []
+
+    for row_start in range(0, cave_img.get_height(), GRID_TILE_SIZE):
+        row = []
+        for col_start in range(0, cave_img.get_width(), GRID_TILE_SIZE):
+            total = 0
+            black = 0
+            row_end = min(row_start + GRID_TILE_SIZE, cave_img.get_height())
+            col_end = min(col_start + GRID_TILE_SIZE, cave_img.get_width())
+
+            for y in range(row_start, row_end, GRID_SAMPLE_STEP):
+                for x in range(col_start, col_end, GRID_SAMPLE_STEP):
+                    total += 1
+                    if is_black_sample(cave_img.get_at((x, y)), bg):
+                        black += 1
+
+            row.append(black / total >= BLACK_SAMPLE_RATIO)
+        grid.append(row)
+
+    return grid
+
+
+def can_stand(pos: pygame.Vector2, grid: list[list[bool]], tile_sz: int) -> bool:
+    w, h = HITBOX_HALF
+    left = int((pos.x - w) // tile_sz)
+    right = int((pos.x + w) // tile_sz)
+    top = int((pos.y - h) // tile_sz)
+    bottom = int((pos.y + h) // tile_sz)
+
+    for r in range(top, bottom + 1):
+        for c in range(left, right + 1):
+            if r < 0 or c < 0 or r >= len(grid) or c >= len(grid[r]) or grid[r][c]:
                 return False
     return True
 
 
-def nearest_walkable_position(target):
-    candidates = []
-    for grid_y, row in enumerate(wall_grid):
-        for grid_x, is_wall in enumerate(row):
-            if not is_wall:
-                position = pygame.Vector2(
-                    (grid_x + 0.5) * world_cell_size,
-                    (grid_y + 0.5) * world_cell_size,
-                )
-                candidates.append(
-                    ((position - target).length_squared(), position)
-                )
+def find_spawn(target: pygame.Vector2, grid: list[list[bool]], tile_sz: int) -> pygame.Vector2:
+    start_c = int(target.x // tile_sz)
+    start_r = int(target.y // tile_sz)
+    start_c = max(0, min(start_c, len(grid[0]) - 1))
+    start_r = max(0, min(start_r, len(grid) - 1))
 
-    for _, position in sorted(candidates, key=lambda candidate: candidate[0]):
-        if can_move_to(position):
-            return position
+    q = deque([(start_r, start_c)])
+    seen = {(start_r, start_c)}
 
-    raise ValueError("The cave map has no walkable spawn position.")
+    while q:
+        r, c = q.popleft()
+        tile_center = pygame.Vector2((c + 0.5) * tile_sz, (r + 0.5) * tile_sz)
+        if can_stand(tile_center, grid, tile_sz):
+            return tile_center
 
+        for nr, nc in ((r - 1, c), (r, c + 1), (r + 1, c), (r, c - 1)):
+            n = (nr, nc)
+            if 0 <= nr < len(grid) and 0 <= nc < len(grid[nr]) and n not in seen:
+                seen.add(n)
+                q.append(n)
 
-walk_frames = {
-    direction: [
-        pygame.transform.scale(
-          #get the right folder for animatoins
-            pygame.image.load(
-                images_dir / "walk" / direction / f"{frame}.png"
-            ).convert_alpha(),
-            (80, 80),
-        )
-        for frame in range(1, 10)
-    ]
-    for direction in ("down", "right", "up", "left")
-}
-facing = "down"
-animation_time = 0.0
-animation_speed = 0.12
-
-# Spawn at the foot of the lit entrance stairs near the upper-right of the map.
-entrance_spawn = pygame.Vector2(
-    map_surface.get_width() * 0.87,
-    map_surface.get_height() * 0.45,
-) * zoom
-player_world_pos = nearest_walkable_position(entrance_spawn)
-
-# make  the players screen i sin the middle
-screen_center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
+    raise ValueError("No walkable spawn found on cave map.")
 
 
+def load_sprites(dir_path: Path) -> dict[str, list[pygame.Surface]]:
+    return {
+        dir: [
+            pygame.transform.scale(
+                pygame.image.load(dir_path / "walk" / dir / f"{i}.png").convert_alpha(),
+                FRAME_SIZE,
+            )
+            for i in range(1, 10)
+        ]
+        for dir in DIRECTIONS
+    }
 
 
-while running:
-  dt = clock.tick(60) / 1000
+def run_game() -> None:
+    screen = pygame.display.set_mode(WINDOW_SIZE)
+    clock = pygame.time.Clock()
+    img_dir = Path(__file__).resolve().parent / "images"
 
-  for event in pygame.event.get():
-    if event.type == pygame.QUIT:
-      running = False
+    raw_map = pygame.image.load(img_dir / "cavemap.png").convert()
+    world = pygame.transform.scale(raw_map, (raw_map.get_width() * MAP_SCALE, raw_map.get_height() * MAP_SCALE))
+    grid = build_grid(raw_map)
+    tile_size = GRID_TILE_SIZE * MAP_SCALE
+    sprites = load_sprites(img_dir)
 
-  keys = pygame.key.get_pressed()
-  movement = pygame.Vector2(0, 0)
-  if keys[pygame.K_w]:
-    movement.y -= 1
-  if keys[pygame.K_s]:
-    movement.y += 1
-  if keys[pygame.K_a]:
-    movement.x -= 1
-  if keys[pygame.K_d]:
-    movement.x += 1
+    spawn_x, spawn_y = ENTRANCE_FRACTION
+    spawn_target = pygame.Vector2(raw_map.get_width() * spawn_x, raw_map.get_height() * spawn_y) * MAP_SCALE
+    pos = find_spawn(spawn_target, grid, tile_size)
 
-  has_input = movement.length_squared() > 0
-  if has_input:
-    movement = movement.normalize()
-    if abs(movement.x) > abs(movement.y):
-      facing = "right" if movement.x > 0 else "left"
-    else:
-      facing = "down" if movement.y > 0 else "up"
+    center = pygame.Vector2(screen.get_width() / 2, screen.get_height() / 2)
+    facing = "down"
+    anim_timer = 0.0
+    running = True
 
-  previous_pos = player_world_pos.copy()
-  if has_input:
-    next_pos = player_world_pos.copy()
-    next_pos.x += movement.x * 300 * dt
-    if can_move_to(next_pos):
-      player_world_pos.x = next_pos.x
+    while running:
+        dt = min(clock.tick(60) / 1000, 0.05)
 
-    next_pos = player_world_pos.copy()
-    next_pos.y += movement.y * 300 * dt
-    if can_move_to(next_pos):
-      player_world_pos.y = next_pos.y
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
 
-  moving = player_world_pos != previous_pos
-  if moving:
-    animation_time += dt
-  else:
-    animation_time = 0.0
+        keys = pygame.key.get_pressed()
+        move = pygame.Vector2(int(keys[pygame.K_d]) - int(keys[pygame.K_a]), int(keys[pygame.K_s]) - int(keys[pygame.K_w]))
+        has_input = move.length_squared() > 0
 
-  frame_index = int(animation_time / animation_speed) % len(walk_frames[facing])
+        if has_input:
+            move = move.normalize()
+            if abs(move.x) > abs(move.y):
+                facing = "right" if move.x > 0 else "left"
+            else:
+                facing = "down" if move.y > 0 else "up"
 
-  camera_x = max(
-      0,
-      min(
-          player_world_pos.x - screen_center.x,
-          bg.get_width() - screen.get_width(),
-      ),
-  )
-  camera_y = max(
-      0,
-      min(
-          player_world_pos.y - screen_center.y,
-          bg.get_height() - screen.get_height(),
-      ),
-  )
+        prev_pos = pos.copy()
+        if has_input:
+            step_x = move.x * SPEED * dt
+            cand = pygame.Vector2(pos.x + step_x, pos.y)
+            if can_stand(cand, grid, tile_size):
+                pos.x = cand.x
 
-  # have bg black in order to have the ouside of map look like the void
-  screen.fill((0, 0, 0))
+            step_y = move.y * SPEED * dt
+            cand = pygame.Vector2(pos.x, pos.y + step_y)
+            if can_stand(cand, grid, tile_size):
+                pos.y = cand.y
 
-  screen.blit(bg, (-round(camera_x), -round(camera_y)))
-# players pov
-  current_frame = walk_frames[facing][frame_index if moving else 0]
-  player_rect = current_frame.get_rect(
-      center=(
-          round(player_world_pos.x - camera_x),
-          round(player_world_pos.y - camera_y),
-      )
-  )
-  screen.blit(current_frame, player_rect)
+        is_moving = pos != prev_pos
+        if is_moving:
+            anim_timer += dt
+        else:
+            anim_timer = 0.0
 
-  pygame.display.flip()
+        frames = sprites[facing]
+        frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
+        current_frame = frames[frame_idx if is_moving else 0]
 
-pygame.quit()
+        cam_x = max(0, min(pos.x - center.x, world.get_width() - screen.get_width()))
+        cam_y = max(0, min(pos.y - center.y, world.get_height() - screen.get_height()))
+
+        screen.fill((0, 0, 0))
+        screen.blit(world, (-round(cam_x), -round(cam_y)))
+        player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
+        screen.blit(current_frame, player_rect)
+        pygame.display.flip()
+
+
+def main() -> None:
+    pygame.init()
+    try:
+        run_game()
+    finally:
+        pygame.quit()
+
+
+if __name__ == "__main__":
+    main()
