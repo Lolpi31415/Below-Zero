@@ -1,10 +1,12 @@
 from collections import deque
+from itertools import product
 from pathlib import Path
 import random
 import asyncio
 
 import pygame
 
+# These values control the size and feel of the whole game.
 WINDOW_SIZE = (1280, 720)
 MAP_SCALE = 3
 GRID_TILE_SIZE = 16
@@ -41,6 +43,8 @@ PORTAL_ORE_CLEARANCE_TILES = 5
 NPC_SIZE = (64, 96)
 NPC_COLLISION_DISTANCE = 58
 SHOP_INTERACTION_DISTANCE = 144
+
+# Each ore can use one of these pictures.
 ORE_IMAGE_FILES = (
     "stoneore.png",
     "Screenshot_2026-11-14_at_11.55.42_AM-removebg-preview.png",
@@ -49,10 +53,12 @@ ORE_IMAGE_FILES = (
 
 
 def get_background_color(cave_img: pygame.Surface) -> tuple[int, int, int]:
+    # The top-left pixel shows the open-cave background color.
     return cave_img.get_at((0, 0))[:3]
 
 
 def is_black_sample(color: pygame.Color, background: tuple[int, int, int]) -> bool:
+    # Compare how close a pixel is to the open-cave color.
     channel_differences = (
         abs(color.r - background[0]),
         abs(color.g - background[1]),
@@ -62,44 +68,54 @@ def is_black_sample(color: pygame.Color, background: tuple[int, int, int]) -> bo
 
 
 def build_grid(cave_img: pygame.Surface) -> list[list[bool]]:
+    # Turn the cave picture into a map of blocked and open spaces.
     bg = get_background_color(cave_img)
-    grid = []
+    row_starts = range(0, cave_img.get_height(), GRID_TILE_SIZE)
+    col_starts = range(0, cave_img.get_width(), GRID_TILE_SIZE)
+    grid = [[] for _ in row_starts]
 
-    for row_start in range(0, cave_img.get_height(), GRID_TILE_SIZE):
-        row = []
-        for col_start in range(0, cave_img.get_width(), GRID_TILE_SIZE):
-            total = 0
-            black = 0
-            row_end = min(row_start + GRID_TILE_SIZE, cave_img.get_height())
-            col_end = min(col_start + GRID_TILE_SIZE, cave_img.get_width())
+    # Look at every small square in the map, one square at a time.
+    for row_start, col_start in product(row_starts, col_starts):
+        row_end = min(row_start + GRID_TILE_SIZE, cave_img.get_height())
+        col_end = min(col_start + GRID_TILE_SIZE, cave_img.get_width())
+        samples = product(
+            range(row_start, row_end, GRID_SAMPLE_STEP),
+            range(col_start, col_end, GRID_SAMPLE_STEP),
+        )
+        sample_points = tuple(samples)
+        total = len(sample_points)
+        black = sum(
+            is_black_sample(cave_img.get_at((x, y)), bg)
+            for y, x in sample_points
+        )
 
-            for y in range(row_start, row_end, GRID_SAMPLE_STEP):
-                for x in range(col_start, col_end, GRID_SAMPLE_STEP):
-                    total += 1
-                    if is_black_sample(cave_img.get_at((x, y)), bg):
-                        black += 1
-
-            row.append(black / total >= BLACK_SAMPLE_RATIO)
-        grid.append(row)
+        row_index = row_start // GRID_TILE_SIZE
+        grid[row_index].append(total > 0 and black / total >= BLACK_SAMPLE_RATIO)
 
     return grid
 
 
 def can_stand(pos: pygame.Vector2, grid: list[list[bool]], tile_sz: int) -> bool:
+    # Check whether all map squares touching the player's hitbox are open.
     w, h = HITBOX_HALF
     left = int((pos.x - w) // tile_sz)
     right = int((pos.x + w) // tile_sz)
     top = int((pos.y - h) // tile_sz)
     bottom = int((pos.y + h) // tile_sz)
 
-    for r in range(top, bottom + 1):
-        for c in range(left, right + 1):
-            if r < 0 or c < 0 or r >= len(grid) or c >= len(grid[r]) or grid[r][c]:
-                return False
-    return True
+    hitbox_tiles = product(range(top, bottom + 1), range(left, right + 1))
+
+    # Any blocked or out-of-bounds tile under the hitbox prevents movement.
+    return all(
+        0 <= r < len(grid)
+        and 0 <= c < len(grid[r])
+        and not grid[r][c]
+        for r, c in hitbox_tiles
+    )
 
 
 def find_spawn(target: pygame.Vector2, grid: list[list[bool]], tile_sz: int) -> pygame.Vector2:
+    # Start near a target, then search outward until an open tile is found.
     start_c = int(target.x // tile_sz)
     start_r = int(target.y // tile_sz)
     start_c = max(0, min(start_c, len(grid[0]) - 1))
@@ -109,6 +125,7 @@ def find_spawn(target: pygame.Vector2, grid: list[list[bool]], tile_sz: int) -> 
     seen = {(start_r, start_c)}
 
     while q:
+        # Breadth-first search visits nearby spots before moving farther away.
         r, c = q.popleft()
         tile_center = pygame.Vector2((c + 0.5) * tile_sz, (r + 0.5) * tile_sz)
         if can_stand(tile_center, grid, tile_sz):
@@ -124,6 +141,7 @@ def find_spawn(target: pygame.Vector2, grid: list[list[bool]], tile_sz: int) -> 
 
 
 def load_sprites(dir_path: Path) -> dict[str, list[pygame.Surface]]:
+    # Load and resize nine walking pictures for each direction.
     return {
         dir: [
             pygame.transform.scale(
@@ -137,6 +155,7 @@ def load_sprites(dir_path: Path) -> dict[str, list[pygame.Surface]]:
 
 
 def load_ore_images(img_dir: Path) -> list[pygame.Surface]:
+    # Turn each ore picture file into a scaled Pygame image.
     return [
         pygame.transform.scale(
             pygame.image.load(img_dir / filename).convert_alpha(),
@@ -156,32 +175,36 @@ def scatter_ores(
     ore_images,
     excluded_area,
 ):
+    # Make a list of safe places where ore can appear.
     candidates = []
-    for row, tiles in enumerate(grid):
-        for col, blocked in enumerate(tiles):
-            if blocked:
-                continue
+    grid_width = len(grid[0]) if grid else 0
 
-            position = pygame.Vector2(
-                (col + 0.5) * tile_size,
-                (row + 0.5) * tile_size,
-            )
-            if not can_stand(position, grid, tile_size):
-                continue
-            if position.distance_to(player_pos) < 3 * tile_size:
-                continue
-            if position.distance_to(snake_pos) < 3 * tile_size:
-                continue
-            if position.distance_to(npc_pos) < 3 * tile_size:
-                continue
-            if position.distance_to(portal_pos) < PORTAL_ORE_CLEARANCE_TILES * tile_size:
-                continue
-            if excluded_area.collidepoint(position):
-                continue
-            candidates.append(position)
+    # Visit every map square and keep only good ore spots.
+    for row, col in product(range(len(grid)), range(grid_width)):
+        if row >= len(grid) or col >= len(grid[row]) or grid[row][col]:
+            continue
+
+        position = pygame.Vector2(
+            (col + 0.5) * tile_size,
+            (row + 0.5) * tile_size,
+        )
+        if not can_stand(position, grid, tile_size):
+            continue
+        if position.distance_to(player_pos) < 3 * tile_size:
+            continue
+        if position.distance_to(snake_pos) < 3 * tile_size:
+            continue
+        if position.distance_to(npc_pos) < 3 * tile_size:
+            continue
+        if position.distance_to(portal_pos) < PORTAL_ORE_CLEARANCE_TILES * tile_size:
+            continue
+        if excluded_area.collidepoint(position):
+            continue
+        candidates.append(position)
 
     random.shuffle(candidates)
     ores = []
+    # Keep ore far enough apart so it does not form one large pile.
     for position in candidates:
         if any(position.distance_to(other_pos) < 2 * tile_size for other_pos, _ in ores):
             continue
@@ -192,13 +215,18 @@ def scatter_ores(
 
 
 def cave_routes(grid, tile_size):
+    # Build a road map made from every open square in the cave.
     routes = {}
-    for row, tiles in enumerate(grid):
-        for col, blocked in enumerate(tiles):
-            if not blocked:
-                center = pygame.Vector2((col + 0.5) * tile_size, (row + 0.5) * tile_size)
-                if can_stand(center, grid, tile_size):
-                    routes[col, row] = center
+    grid_width = len(grid[0]) if grid else 0
+
+    # One flat pass creates tile centers for the route graph.
+    for row, col in product(range(len(grid)), range(grid_width)):
+        if row >= len(grid) or col >= len(grid[row]) or grid[row][col]:
+            continue
+
+        center = pygame.Vector2((col + 0.5) * tile_size, (row + 0.5) * tile_size)
+        if can_stand(center, grid, tile_size):
+            routes[col, row] = center
 
     neighbors = {}
     for col, row in routes:
@@ -208,6 +236,7 @@ def cave_routes(grid, tile_size):
 
 
 def find_routes(start, neighbors):
+    # Follow the roads and remember how to get back toward the starting tile.
     previous = {start: None}
     queue = deque([start])
     while queue:
@@ -220,6 +249,7 @@ def find_routes(start, neighbors):
 
 
 def find_shopkeeper_position(player_pos, grid, tile_size):
+    # Put the shopkeeper somewhere reachable and usually far from the player.
     centers, neighbors = cave_routes(grid, tile_size)
     start = int(player_pos.x // tile_size), int(player_pos.y // tile_size)
     reachable = find_routes(start, neighbors)
@@ -239,6 +269,7 @@ def find_shopkeeper_position(player_pos, grid, tile_size):
 
 class Snake:
     def __init__(self, img_dir, player_pos, grid, tile_size):
+        # Save the map and find walking roads for the snake.
         self.grid = grid
         self.tile_size = tile_size
         self.centers, self.neighbors = cave_routes(grid, tile_size)
@@ -258,6 +289,7 @@ class Snake:
         self.walk = {}
 
         folder = img_dir / "walk" / "snake"
+        # Load both a standing picture and walking animation for each direction.
         for direction in DIRECTIONS:
             sprite = pygame.image.load(folder / f"snake_{direction}.png").convert_alpha()
             self.idle[direction] = pygame.transform.scale(sprite, SNAKE_SIZE)
@@ -273,9 +305,11 @@ class Snake:
             ]
 
     def tile_at(self, pos):
+        # Translate a pixel position into a square on the cave grid.
         return int(pos.x // self.tile_size), int(pos.y // self.tile_size)
 
     def update(self, player_pos, dt):
+        # Recalculate the route only when the player enters a different square.
         player_tile = self.tile_at(player_pos)
         if player_tile != self.player_tile:
             self.player_tile = player_tile
@@ -287,10 +321,12 @@ class Snake:
 
         target = self.centers[self.next_tile]
         if self.tile == self.next_tile == player_tile:
+            # Once on the player's square, move directly toward the player.
             target = player_pos
 
         step = self.pos.move_towards(target, SNAKE_SPEED * dt)
         old_pos = self.pos.copy()
+        # Move sideways first, then up or down, while checking for walls.
         if can_stand(pygame.Vector2(step.x, self.pos.y), self.grid, self.tile_size):
             self.pos.x = step.x
         if can_stand(pygame.Vector2(self.pos.x, step.y), self.grid, self.tile_size):
@@ -301,18 +337,21 @@ class Snake:
             self.anim_timer = 0
             return self.idle[self.facing]
 
+        # Choose the snake's facing direction from the way it moved.
         if abs(move.x) > abs(move.y):
             self.facing = "right" if move.x > 0 else "left"
         else:
             self.facing = "down" if move.y > 0 else "up"
 
         frames = self.walk[self.facing]
+        # Pick one picture from the walking animation.
         frame = frames[int(self.anim_timer / SNAKE_FRAME_DURATION) % len(frames)]
         self.anim_timer += dt
         return frame
 
 
 async def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
+    # Draw the opening menu and wait for the player to choose.
     background = pygame.image.load(img_dir / "mainmenubg.png").convert()
     background = pygame.transform.scale(background, screen.get_size())
     button_font = pygame.font.Font(None, 44)
@@ -321,6 +360,7 @@ async def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
 
     while True:
         mouse_pos = pygame.mouse.get_pos()
+        # Check for keyboard, mouse, and window-close actions.
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
@@ -336,6 +376,7 @@ async def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
                     return False
 
         screen.blit(background, (0, 0))
+        # Draw each button and change its color while the mouse is over it.
         for label, button in (
             ("Start Game", start_button),
             ("Quit", quit_button),
@@ -356,6 +397,7 @@ async def show_main_menu(screen: pygame.Surface, clock, img_dir: Path) -> bool:
 
 
 def show_loading_screen(screen: pygame.Surface) -> int:
+    # LARP a loading screen so it looks polished
     screen.fill((0, 0, 0))
     loading_font = pygame.font.Font(None, 40)
     loading_text = loading_font.render("loading", True, (255, 255, 255))
@@ -365,6 +407,7 @@ def show_loading_screen(screen: pygame.Surface) -> int:
 
 
 async def keep_loading_screen_visible(clock, shown_at: int) -> bool:
+    # Keep showing the loading screen for a short, fixed amount of time.
     while pygame.time.get_ticks() - shown_at < LOADING_SCREEN_DURATION_MS:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -375,6 +418,7 @@ async def keep_loading_screen_visible(clock, shown_at: int) -> bool:
 
 
 async def show_intro_screen(screen: pygame.Surface, clock) -> bool:
+    # Explain the story and controls before the game begins.
     story_font = pygame.font.Font(None, 42)
     prompt_font = pygame.font.Font(None, 30)
     story_lines = (
@@ -395,6 +439,7 @@ async def show_intro_screen(screen: pygame.Surface, clock) -> bool:
                 return True
 
         screen.fill((0, 0, 0))
+        # Draw the story one line lower than the line before it.
         for line_number, line in enumerate(story_lines):
             text = story_font.render(line, True, (255, 255, 255))
             screen.blit(
@@ -417,6 +462,7 @@ async def show_intro_screen(screen: pygame.Surface, clock) -> bool:
 
 
 async def show_shop_menu(screen, clock, ore_count, owns_launchpad):
+    # Let the player spend ore on a launch pad.
     title_font = pygame.font.Font(None, 56)
     item_font = pygame.font.Font(None, 38)
     prompt_font = pygame.font.Font(None, 28)
@@ -425,6 +471,7 @@ async def show_shop_menu(screen, clock, ore_count, owns_launchpad):
     buy_button.center = (center_x, 410)
 
     while True:
+        # Buying is allowed only if the player has enough ore and still needs the pad.
         can_buy = not owns_launchpad and ore_count >= LAUNCHPAD_COST
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -458,6 +505,7 @@ async def show_shop_menu(screen, clock, ore_count, owns_launchpad):
 
 
 def load_mining_frames(img_dir):
+    # Cut the mining animation picture into several separate frames.
     strip = pygame.image.load(img_dir / "mining_animation.png").convert()
     size = strip.get_height()
     frames = []
@@ -469,6 +517,7 @@ def load_mining_frames(img_dir):
 
 
 def draw_health_bar(screen, frame, position, health, color):
+    # Draw an empty health bar frame, then fill it by the health percentage.
     x, y = position
     width, height = frame.get_size()
     fill = pygame.Rect(x + 5, y + 7, width - 11, height - 14)
@@ -479,6 +528,7 @@ def draw_health_bar(screen, frame, position, health, color):
 
 
 async def show_credits(screen, clock):
+    # Scroll the names in the credits across the bottom and top of the screen.
     credits_lines = (
         "Credits",
         "",
@@ -505,6 +555,7 @@ async def show_credits(screen, clock):
                 return
 
         screen.fill((0, 0, 0))
+        # The first credit line uses a large font; every other line uses normal text.
         for line_number, line in enumerate(credits_lines):
             if not line:
                 continue
@@ -520,6 +571,7 @@ async def show_credits(screen, clock):
 
 
 async def run_game() -> None:
+    # Start Pygame, load the world, and then run the main game loop.
     screen = pygame.display.set_mode(WINDOW_SIZE)
     clock = pygame.time.Clock()
     img_dir = Path(__file__).parent / "images"
@@ -527,6 +579,7 @@ async def run_game() -> None:
     if not await show_main_menu(screen, clock, img_dir):
         return
 
+    # Build the large cave picture and the small squares used for movement.
     loading_started_at = show_loading_screen(screen)
     raw_map = pygame.image.load(img_dir / "cavemap.png").convert()
     world = pygame.transform.scale(raw_map, (raw_map.get_width() * MAP_SCALE, raw_map.get_height() * MAP_SCALE))
@@ -539,6 +592,7 @@ async def run_game() -> None:
     mining_target = None
     ore_count = 0
     owns_launchpad = False
+    # The health bar and respawn message are drawn during the game loop.
     health_bar = pygame.image.load(img_dir / "health_bar.png").convert_alpha()
     death_message = pygame.font.Font(None, 44).render(
         "You died. Press Enter to respawn.", True, (255, 255, 255)
@@ -552,6 +606,7 @@ async def run_game() -> None:
     pad_height = round(launchpad.get_height() * pad_width / launchpad.get_width())
     launchpad = pygame.transform.scale(launchpad, (pad_width, pad_height))
     launchpad_placed = False
+    # Find open landing spaces for the portal, launch pad, and entrance.
     portal_pos = find_spawn(pygame.Vector2(PORTAL_LANDING) * MAP_SCALE, grid, tile_size)
     launch_arrival_pos = find_spawn(
         pygame.Vector2(PORTAL_LAUNCH_ARRIVAL) * MAP_SCALE, grid, tile_size
@@ -565,6 +620,7 @@ async def run_game() -> None:
     snake_health = MAX_HEALTH
     contact_cooldown = 0.0
 
+    # Put the shopkeeper and snake into safe, walkable places.
     shopkeeper = pygame.image.load(img_dir / "pixilart-drawing.png").convert_alpha()
     shopkeeper = pygame.transform.scale(shopkeeper, NPC_SIZE)
     shopkeeper_pos = find_shopkeeper_position(pos, grid, tile_size)
@@ -596,23 +652,28 @@ async def run_game() -> None:
     running = True
 
     while running:
+        # Seconds between frames keep movement the same on different computers.
         dt = min(clock.tick(60) / 1000, 0.05)
         near_shopkeeper = pos.distance_to(shopkeeper_pos) <= SHOP_INTERACTION_DISTANCE
 
+        # Handle one action at a time, such as a key press or mouse click.
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
             elif player_health == 0:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+                    # Returning to the entrance gives the player a fresh start.
                     player_health = MAX_HEALTH
                     pos = entrance_pos.copy()
                     contact_cooldown = CONTACT_COOLDOWN
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if snake_health > 0 and pos.distance_to(snake.pos) <= ATTACK_RANGE:
+                    # Each attack removes a chunk of the snake's health.
                     snake_health = max(0, snake_health - ATTACK_DAMAGE)
                     if snake_health == 0:
                         snake_respawn_at = pygame.time.get_ticks() + SNAKE_RESPAWN_MS
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                # Mining starts only near the closest ore and uses up one hit.
                 mining_started = None
                 mining_target = None
                 if ores:
@@ -629,8 +690,10 @@ async def run_game() -> None:
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_z:
                 if owns_launchpad and launchpad_area.collidepoint(pos.x, pos.y):
                     if launchpad_placed:
+                        # Z sends the player away after the launch pad is already placed.
                         pos = launch_arrival_pos.copy()
                     else:
+                        # Z places the launch pad the first time at the marked area.
                         launchpad_placed = True
             elif (
                 event.type == pygame.KEYDOWN
@@ -642,6 +705,7 @@ async def run_game() -> None:
                 )
                 break
 
+        # D minus A finds horizontal movement, and S minus W finds vertical movement.
         keys = pygame.key.get_pressed()
         move = pygame.Vector2(int(keys[pygame.K_d]) - int(keys[pygame.K_a]), int(keys[pygame.K_s]) - int(keys[pygame.K_w]))
         has_input = player_health > 0 and move.length_squared() > 0
@@ -655,6 +719,7 @@ async def run_game() -> None:
 
         prev_pos = pos.copy()
         if has_input:
+            # Try horizontal movement first, keeping it from crossing walls or the shopkeeper.
             step_x = move.x * SPEED * dt
             cand = pygame.Vector2(pos.x + step_x, pos.y)
             if (
@@ -663,6 +728,7 @@ async def run_game() -> None:
             ):
                 pos.x = cand.x
 
+            # Then try vertical movement with the same collision checks.
             step_y = move.y * SPEED * dt
             cand = pygame.Vector2(pos.x, pos.y + step_y)
             if (
@@ -684,6 +750,7 @@ async def run_game() -> None:
         else:
             anim_timer = 0.0
 
+        # Use the walk animation while moving and the standing picture while still.
         frames = sprites[facing]
         frame_idx = int(anim_timer / FRAME_DURATION) % len(frames)
         current_frame = frames[frame_idx if is_moving else 0]
@@ -691,10 +758,12 @@ async def run_game() -> None:
         if mining_started is not None:
             mining_frame = (pygame.time.get_ticks() - mining_started) // MINING_FRAME_MS
             if player_health == 0 or mining_frame >= len(mining_frames):
+                # Stop the mining animation if the player dies or the animation ends.
                 mining_started = None
                 mining_target = None
 
         if snake_respawn_at is not None and pygame.time.get_ticks() >= snake_respawn_at:
+            # Bring the snake back after the waiting time has passed.
             snake.tile = snake.next_tile = snake_spawn_tile
             snake.pos = snake.centers[snake_spawn_tile].copy()
             snake.facing = "down"
@@ -707,14 +776,17 @@ async def run_game() -> None:
             contact_cooldown = max(0, contact_cooldown - dt)
             dx, dy = snake.pos - pos
             if contact_cooldown == 0 and abs(dx) < 2 * HITBOX_HALF[0] and abs(dy) < 2 * HITBOX_HALF[1]:
+                # Briefly hurt the player when the snake touches the hitbox.
                 player_health = max(0, player_health - CONTACT_DAMAGE)
                 contact_cooldown = CONTACT_COOLDOWN
 
+        # Keep the camera following the player, without showing past the cave edges.
         cam_x = max(0, min(pos.x - center.x, world.get_width() - screen.get_width()))
         cam_y = max(0, min(pos.y - center.y, world.get_height() - screen.get_height()))
 
         screen.fill((0, 0, 0))
         screen.blit(world, (-round(cam_x), -round(cam_y)))
+        # Convert every ore's cave position into a position on the screen.
         for ore_pos, ore_image, _ in ores:
             ore_rect = ore_image.get_rect(
                 center=(round(ore_pos.x - cam_x), round(ore_pos.y - cam_y))
@@ -723,6 +795,7 @@ async def run_game() -> None:
         if launchpad_placed:
             pad_rect = launchpad.get_rect(center=launchpad_area.center)
             screen.blit(launchpad, pad_rect.move(-round(cam_x), -round(cam_y)))
+        # The shopkeeper, snake, and player use the same camera offset.
         shopkeeper_rect = shopkeeper.get_rect(
             center=(round(shopkeeper_pos.x - cam_x), round(shopkeeper_pos.y - cam_y))
         )
@@ -733,6 +806,7 @@ async def run_game() -> None:
         player_rect = current_frame.get_rect(center=(round(pos.x - cam_x), round(pos.y - cam_y)))
         screen.blit(current_frame, player_rect)
         if mining_target is not None and mining_frame is not None:
+            # Show the mining swing over the ore while the mining timer runs.
             mining_effect = mining_frames[mining_frame]
             mining_rect = mining_effect.get_rect(
                 center=(
@@ -742,6 +816,7 @@ async def run_game() -> None:
             )
             screen.blit(mining_effect, mining_rect)
         if near_shopkeeper:
+            # Tell the player how to open the shop when close enough.
             prompt = prompt_font.render(
                 "Press E to enter shop menu", True, (255, 255, 255)
             )
@@ -753,12 +828,14 @@ async def run_game() -> None:
         if snake_health > 0:
             bar_pos = (snake_rect.centerx - health_bar.get_width() // 2, snake_rect.top - health_bar.get_height())
             draw_health_bar(screen, health_bar, bar_pos, snake_health, (216, 107, 48))
+        # Draw player health and ore count as game information.
         draw_health_bar(screen, health_bar, (16, 16), player_health, (208, 55, 68))
         ore_text = prompt_font.render(f"Ores: {ore_count}", True, (255, 255, 255))
         ore_rect = ore_text.get_rect(topleft=(20, 56))
         pygame.draw.rect(screen, (20, 24, 28), ore_rect.inflate(8, 6))
         screen.blit(ore_text, ore_rect)
         if player_health == 0:
+            # Freeze the player's health state and show instructions for restarting.
             message_rect = death_message.get_rect(center=screen.get_rect().center)
             pygame.draw.rect(screen, (26, 17, 20), message_rect.inflate(32, 20))
             screen.blit(death_message, message_rect)
@@ -767,6 +844,7 @@ async def run_game() -> None:
 
 
 async def main() -> None:
+    # Prepare Pygame, run the game, and always clean it up afterward.
     pygame.init()
     try:
         await run_game()
